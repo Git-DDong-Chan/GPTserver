@@ -7,51 +7,54 @@ from confluent_kafka import KafkaException
 import sys
 import openai
 import mysql.connector
-from datetime import date
+
+openai.api_key = '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'
 
 running = True
 
 mydb = mysql.connector.connect(
-    host=os.getenv('MYSQL_HOST'),
-    port=os.getenv('MYSQL_PORT'),
-    user=os.getenv('MYSQL_USER'),
-    password=os.getenv('MYSQL_USER_PASSWORD'),
-    database="sbb",
+    host='20.249.88.211',
+    port=3306,
+    user='rbmasteruser',
+    password='1234',
+    database="rb",
 )
 
+
 def init_consumer():
-    conf = {'bootstrap.servers': "20.214.200.75:29092",
+    conf = {'bootstrap.servers': "20.249.88.211:29092",
             'group.id': "chatgpt",
             'auto.offset.reset': 'smallest'}
 
     return Consumer(conf)
 
 
-def request_to_chatGPT(data):
-    title = data.get('title')
+def request_to_chatGPT(data, user_id):  # user_id 매개변수 추가
     content = data.get('content')
+
     response = openai.ChatCompletion.create(
-        model="gpt-4", # gpt4는 현재 신청하여 승인된 사람에게만 권한이 있으므로 gpt4권한이 없다면 gpt-3.5-turbo로 설정
+        model="gpt-4",
         messages=[
-            {"role": "system", "content": "You are a consummate professional. Any question on the forum can be answered as a comment."},
-            {"role": "user", "content": f"다음 질문은 게시판에 올라온 질문입니다. \n"
-                                        f"---제목 : {title} \n"
-                                        f"내용 : {content} \n"
-                                        f"---\n"
-                                        f" 해당 질문에 전문가가 되어 답변해주시기 바랍니다."},
+            {"role": "system", "content": "You are a helpful assistant that recommends books."},
+            {"role": "user", "content": f"{content} 이 감정에 어울리는 혹은 달래줄만한 책 10권만 추천해줘.\n"
+                                        "책은 알라딘 사이트에 있는 책들로 추천해줘.\n"
+                                        "기본적으로 답변은 단답형으로 <\"책 제목\" - 저자> 형식으로 답변해줘 \n",
+            }
         ]
     )
 
-    return response["choices"][0]["message"]['content']
+    return response["choices"][0]["message"]["content"]
 
-
-def save_db(question_id,response):
+def save_db(title, author, user_id):
     mycursor = mydb.cursor()
-    sql = "INSERT INTO answer (content, question_id, create_date) VALUES (%s, %s, %s)"
-    val = (response, question_id, date.today())
-    mycursor.execute(sql, val)
+    sql = "INSERT INTO book (title, author, checks, user_id) VALUES (%s, %s, %s, %s)"
 
-    mydb.commit()
+    try:
+        mycursor.execute(sql, (title, author, 0, user_id))
+        mydb.commit()
+    except Exception as e:
+        print("An error occurred:", e)
+
 
 def msg_process(msg):
     msg_data = json.loads(msg)
@@ -64,26 +67,38 @@ def msg_process(msg):
 
     if command == 'request_chatgpt':
         command_data = msg_data.get('data')
-        if command_data is None:
+        user_id = command_data.get('user_id')  # user_id 추출
+
+        if command_data is None or user_id is None:
             return
-        response = request_to_chatGPT(command_data)
-        question_id = command_data.get('id')
-        if question_id is None:
-            return
-        save_db(question_id,response)
-        print(response)
+
+        response_content = request_to_chatGPT(command_data, user_id)
+        response_lines = response_content.split('\n')
+
+        for line in response_lines:
+            title_start = line.find("\"")
+            title_end = line.rfind("\"")
+            if title_start != -1 and title_end != -1:
+                title = line[title_start + 1:title_end].strip()
+                author = line[title_end + 3:].strip()
+                save_db(title, author, user_id)
+                print(title, author, user_id)
+            else:
+                print("Could not parse title and author")
+
         return
 
-    print(f"the command is not vaild :{command}")
+    print(f"the command is not valid: {command}")
     return
 
-def consume_message(consumer,topics):
+def consume_message(consumer, topics):
     try:
         consumer.subscribe(topics)
 
         while running:
             msg = consumer.poll(timeout=1.0)
-            if msg is None: continue
+            if msg is None:
+                continue
 
             if msg.error():
                 if msg.error().code() == KafkaError._PARTITION_EOF:
@@ -98,11 +113,11 @@ def consume_message(consumer,topics):
         # Close down consumer to commit final offsets.
         consumer.close()
 
+
 def shutdown():
     running = False
 
-# Press the green button in the gutter to run the script.
+
 if __name__ == '__main__':
     consumer = init_consumer()
-    consume_message(consumer,['chatgpt'])
-# See PyCharm help at https://www.jetbrains.com/help/pycharm/
+    consume_message(consumer, ['chatgpt'])
