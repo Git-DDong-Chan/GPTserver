@@ -1,16 +1,12 @@
 import json
-import os
-
-from confluent_kafka import Consumer
-from confluent_kafka import KafkaError
-from confluent_kafka import KafkaException
 import sys
+import time
+
+from confluent_kafka import Consumer, KafkaError, KafkaException
 import openai
 import mysql.connector
 
-openai.api_key = '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'
-
-running = True
+openai.api_key = 'your-key'
 
 mydb = mysql.connector.connect(
     host='20.249.88.211',
@@ -20,7 +16,6 @@ mydb = mysql.connector.connect(
     database="rb",
 )
 
-
 def init_consumer():
     conf = {'bootstrap.servers': "20.249.88.211:29092",
             'group.id': "chatgpt",
@@ -29,7 +24,8 @@ def init_consumer():
     return Consumer(conf)
 
 
-def request_to_chatGPT(data, user_id):  # user_id 매개변수 추가
+
+def request_to_chatGPT(data):
     content = data.get('content')
 
     response = openai.ChatCompletion.create(
@@ -37,9 +33,9 @@ def request_to_chatGPT(data, user_id):  # user_id 매개변수 추가
         messages=[
             {"role": "system", "content": "You are a helpful assistant that recommends books."},
             {"role": "user", "content": f"{content} 이 감정에 어울리는 혹은 달래줄만한 책 10권만 추천해줘.\n"
-                                        "책은 알라딘 사이트에 있는 책들로 추천해줘.\n"
-                                        "기본적으로 답변은 단답형으로 <\"책 제목\" - 저자> 형식으로 답변해줘 \n",
-            }
+                                        "책은 교보문고 사이트에 있는 책들로 추천해줘.\n"
+                                        "기본적으로 답변은 단답형으로 <\"책 제목\" - 저자> 형식으로 답변해줘 \n"
+             }
         ]
     )
 
@@ -72,7 +68,7 @@ def msg_process(msg):
         if command_data is None or user_id is None:
             return
 
-        response_content = request_to_chatGPT(command_data, user_id)
+        response_content = request_to_chatGPT(command_data)
         response_lines = response_content.split('\n')
 
         for line in response_lines:
@@ -95,7 +91,7 @@ def consume_message(consumer, topics):
     try:
         consumer.subscribe(topics)
 
-        while running:
+        while True:  # 무한 루프로 변경하여 자동 재시작
             msg = consumer.poll(timeout=1.0)
             if msg is None:
                 continue
@@ -109,15 +105,17 @@ def consume_message(consumer, topics):
                     raise KafkaException(msg.error())
             else:
                 msg_process(msg.value())
+    except Exception as e:
+        print("An error occurred:", e)
+        time.sleep(5)  # 일시적인 오류 발생 시 잠시 대기 후 다시 시작
     finally:
-        # Close down consumer to commit final offsets.
         consumer.close()
 
-
-def shutdown():
-    running = False
-
-
 if __name__ == '__main__':
-    consumer = init_consumer()
-    consume_message(consumer, ['chatgpt'])
+    while True:  # 무한 루프로 코드 실행을 지속적으로 시도
+        try:
+            consumer = init_consumer()
+            consume_message(consumer, ['chatgpt'])
+        except Exception as e:
+            print("An error occurred:", e)
+            time.sleep(5)  # 잠시 대기 후 다시 시작
